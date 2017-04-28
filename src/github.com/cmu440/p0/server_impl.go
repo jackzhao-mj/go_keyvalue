@@ -16,7 +16,7 @@ import (
 // 3. use a unique goroutine to represent the mutual exclusion entity
 
 const (
-	connhost = "localhost"
+	connhost = "0.0.0.0"
 	conntype = "tcp"
 )
 
@@ -95,6 +95,7 @@ func (kvs *keyValueServer) gokvstore() {
 }
 
 func (kvs *keyValueServer) clientConns(listener net.Listener) {
+	defer listener.Close()
 	for {
 		client, err := listener.Accept()
 		if client == nil {
@@ -110,6 +111,7 @@ func (kvs *keyValueServer) clientConns(listener net.Listener) {
 }
 
 func (kvs *keyValueServer) handleConn(client net.Conn) {
+	defer client.Close()
 	b := bufio.NewReader(client)
 	for {
 		// ReadBytes include '\n'
