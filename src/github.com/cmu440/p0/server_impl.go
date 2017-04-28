@@ -20,35 +20,58 @@ const (
 	conntype = "tcp"
 )
 
-type message struct {
+type kvstoreMessage struct {
 	key   []byte
 	value []byte
 }
 
+type connectionMessage struct {
+	client net.Conn
+	choice int
+}
+
 type keyValueServer struct {
-	clientCount int
-	listener    net.Listener
-	connections map[net.Conn]bool
-	kvstoreCh   chan message
+	clientCount  int
+	listener     net.Listener
+	connections  map[net.Conn]bool
+	connectionCh chan connectionMessage
+	kvstoreCh    chan kvstoreMessage
 }
 
 // New creates and returns (but does not start) a new KeyValueServer.
 func New() KeyValueServer {
-	kvserver := keyValueServer{0, nil, make(map[net.Conn]bool), make(chan message)}
+	kvserver := keyValueServer{0, nil, make(map[net.Conn]bool), make(chan connectionMessage), make(chan kvstoreMessage)}
 	init_db()
 
 	return &kvserver
 }
 
 func (kvs *keyValueServer) Start(port int) error {
-	listener, _ := net.Listen(conntype, connhost+":"+strconv.Itoa(port))
-	// fmt.Println(connhost + ":" + strconv.Itoa(port))
-	for listener == nil {
-		listener, _ = net.Listen(conntype, connhost+":"+strconv.Itoa(port))
+	// TODO fix listening problem
+	kvs.listener, _ = net.Listen(conntype, connhost+":"+strconv.Itoa(port))
+	for kvs.listener == nil {
+		kvs.listener, _ = net.Listen(conntype, connhost+":"+strconv.Itoa(port))
 	}
-	go kvs.clientConns(listener)
+	go kvs.clientConns(kvs.listener)
 	go kvs.gokvstore()
+	go kvs.goconnections()
 	return nil
+}
+
+func (kvs *keyValueServer) goconnections() {
+	for {
+		m := <-kvs.connectionCh
+		if m.choice == 0 {
+			// add
+			kvs.connections[m.client] = true
+			kvs.clientCount++
+		} else {
+			// delete
+			delete(kvs.connections, m.client)
+			kvs.clientCount--
+		}
+
+	}
 }
 
 // use a unique goroutine to represent the mutual exclusion entity
@@ -79,8 +102,8 @@ func (kvs *keyValueServer) clientConns(listener net.Listener) {
 			continue
 		}
 		fmt.Println("accpted")
-		kvs.clientCount++
-		kvs.connections[client] = true
+		m := connectionMessage{client, 0}
+		kvs.connectionCh <- m
 		fmt.Printf("%d: %v <-> %v\n", kvs.clientCount, client.LocalAddr(), client.RemoteAddr())
 		go kvs.handleConn(client)
 	}
@@ -92,19 +115,19 @@ func (kvs *keyValueServer) handleConn(client net.Conn) {
 		// ReadBytes include '\n'
 		line, err := b.ReadBytes('\n')
 		if err != nil { // EOF, or worse
-			fmt.Println("kvs.connections")
-			delete(kvs.connections, client)
-			kvs.clientCount--
+			m := connectionMessage{client, 1}
+			kvs.connectionCh <- m
+			client.Close()
 			break
 		}
 		elements := bytes.Split(line[:(len(line)-1)], []byte(","))
 		if len(elements) == 2 {
 			// it is get command
-			m := message{elements[1], nil}
+			m := kvstoreMessage{elements[1], nil}
 			kvs.kvstoreCh <- m
 		} else {
 			// it is put command
-			m := message{elements[1], elements[2]}
+			m := kvstoreMessage{elements[1], elements[2]}
 			kvs.kvstoreCh <- m
 		}
 	}
@@ -112,6 +135,7 @@ func (kvs *keyValueServer) handleConn(client net.Conn) {
 
 func (kvs *keyValueServer) Close() {
 	// TODO: implement this!
+	// kvs.listener.Close()
 }
 
 func (kvs *keyValueServer) Count() int {
