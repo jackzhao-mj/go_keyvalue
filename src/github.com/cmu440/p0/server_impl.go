@@ -55,7 +55,6 @@ func New() KeyValueServer {
 }
 
 func (kvs *keyValueServer) Start(port int) error {
-	// TODO fix listening problem
 	tcpAddr, err := net.ResolveTCPAddr(conntype, connhost+":"+strconv.Itoa(port))
 	if err != nil {
 		fmt.Println("something is wrong with ResolveTCPAddr")
@@ -83,7 +82,6 @@ func (kvs *keyValueServer) goconnections() {
 			kvs.clientCount++
 		} else {
 			// delete
-			// delete(kvs.connections, m.client)
 			for i, cs := range kvs.clientStates {
 				if cs.connection == m.client {
 					kvs.clientStates = append(kvs.clientStates[:i], kvs.clientStates[i+1:]...)
@@ -105,7 +103,6 @@ func (kvs *keyValueServer) gokvstore() {
 			value := get(string(m.key))
 			content := bytes.Join([][]byte{m.key, value}, []byte(","))
 			whole := bytes.Join([][]byte{content, []byte("\n")}, []byte(""))
-			// fmt.Print(string(whole))
 
 			// send to all connected clients
 			for _, clientState := range kvs.clientStates {
@@ -131,10 +128,7 @@ func (kvs *keyValueServer) clientConns(listener *net.TCPListener) {
 			fmt.Printf("couldn't accept: " + err.Error())
 			continue
 		}
-		fmt.Println("accpted")
-		// set TCPConn WriteBuffer: 15 per message * 500
-		// the longest message is 17 bytes
-		// the first write succeed, but the second one will block
+		// fmt.Println("accpted")
 		client.SetWriteBuffer(300000)
 		m := connectionMessage{*client, 0}
 		kvs.connectionCh <- m
