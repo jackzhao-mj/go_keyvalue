@@ -35,17 +35,21 @@ type connectionMessage struct {
 	choice int
 }
 
+type clientState struct {
+	connection net.TCPConn
+	toBeSent   chan []byte
+}
+
 type keyValueServer struct {
-	clientCount int
-	// listener     net.Listener
-	connections  []net.TCPConn
+	clientCount  int
+	clientStates []clientState
 	connectionCh chan connectionMessage
 	kvstoreCh    chan kvstoreMessage
 }
 
 // New creates and returns (but does not start) a new KeyValueServer.
 func New() KeyValueServer {
-	kvserver := keyValueServer{0, []net.TCPConn{}, make(chan connectionMessage), make(chan kvstoreMessage)}
+	kvserver := keyValueServer{0, []clientState{}, make(chan connectionMessage), make(chan kvstoreMessage)}
 	init_db()
 	return &kvserver
 }
@@ -72,14 +76,15 @@ func (kvs *keyValueServer) goconnections() {
 		if m.choice == 0 {
 			// add
 			// kvs.connections[m.client] = true
-			kvs.connections = append(kvs.connections, m.client)
+			ch := make(chan []byte, 1000)
+			kvs.clientStates = append(kvs.clientStates, clientState{m.client, ch})
 			kvs.clientCount++
 		} else {
 			// delete
 			// delete(kvs.connections, m.client)
-			for i, v := range kvs.connections {
-				if v == m.client {
-					kvs.connections = append(kvs.connections[:i], kvs.connections[i+1:]...)
+			for i, cs := range kvs.clientStates {
+				if cs.connection == m.client {
+					kvs.clientStates = append(kvs.clientStates[:i], kvs.clientStates[i+1:]...)
 					break
 				}
 			}
@@ -100,10 +105,11 @@ func (kvs *keyValueServer) gokvstore() {
 			whole := bytes.Join([][]byte{content, []byte("\n")}, []byte(""))
 
 			// send to all connected clients
-			for _, connection := range kvs.connections {
+			for _, clientState := range kvs.clientStates {
 				// delegate to a goroutine to do the writting for us
 				// introduce buffer; send no more than 500 messages to socket
-				connection.Write(whole)
+				clientState.connection.Write(whole)
+				// write whole to channel responding to the all connections
 			}
 		} else {
 			put(string(m.key), m.value)
