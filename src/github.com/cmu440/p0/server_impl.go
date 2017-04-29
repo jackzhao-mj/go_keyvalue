@@ -15,6 +15,11 @@ import (
 // 2. synchronize through communication on channel
 // 3. use a unique goroutine to represent the mutual exclusion entity
 
+// I did three versions
+// 1. reflect SelectCase
+// 2. aggregator channel
+// 3. use goroutine to represent mutual exclusion entity
+
 const (
 	connhost = "0.0.0.0"
 	conntype = "tcp"
@@ -26,33 +31,36 @@ type kvstoreMessage struct {
 }
 
 type connectionMessage struct {
-	client net.Conn
+	client net.TCPConn
 	choice int
 }
 
 type keyValueServer struct {
-	clientCount  int
-	listener     net.Listener
-	connections  map[net.Conn]bool
+	clientCount int
+	// listener     net.Listener
+	connections  []net.TCPConn
 	connectionCh chan connectionMessage
 	kvstoreCh    chan kvstoreMessage
 }
 
 // New creates and returns (but does not start) a new KeyValueServer.
 func New() KeyValueServer {
-	kvserver := keyValueServer{0, nil, make(map[net.Conn]bool), make(chan connectionMessage), make(chan kvstoreMessage)}
+	kvserver := keyValueServer{0, []net.TCPConn{}, make(chan connectionMessage), make(chan kvstoreMessage)}
 	init_db()
-
 	return &kvserver
 }
 
 func (kvs *keyValueServer) Start(port int) error {
 	// TODO fix listening problem
-	kvs.listener, _ = net.Listen(conntype, connhost+":"+strconv.Itoa(port))
-	for kvs.listener == nil {
-		kvs.listener, _ = net.Listen(conntype, connhost+":"+strconv.Itoa(port))
+	tcpAddr, err := net.ResolveTCPAddr(conntype, connhost+":"+strconv.Itoa(port))
+	if err != nil {
+		fmt.Println("something is wrong with ResolveTCPAddr")
 	}
-	go kvs.clientConns(kvs.listener)
+	listener, err := net.ListenTCP(conntype, tcpAddr)
+	for listener == nil {
+		listener, err = net.ListenTCP(conntype, tcpAddr)
+	}
+	go kvs.clientConns(listener)
 	go kvs.gokvstore()
 	go kvs.goconnections()
 	return nil
@@ -63,11 +71,18 @@ func (kvs *keyValueServer) goconnections() {
 		m := <-kvs.connectionCh
 		if m.choice == 0 {
 			// add
-			kvs.connections[m.client] = true
+			// kvs.connections[m.client] = true
+			kvs.connections = append(kvs.connections, m.client)
 			kvs.clientCount++
 		} else {
 			// delete
-			delete(kvs.connections, m.client)
+			// delete(kvs.connections, m.client)
+			for i, v := range kvs.connections {
+				if v == m.client {
+					kvs.connections = append(kvs.connections[:i], kvs.connections[i+1:]...)
+					break
+				}
+			}
 			kvs.clientCount--
 		}
 
@@ -85,7 +100,9 @@ func (kvs *keyValueServer) gokvstore() {
 			whole := bytes.Join([][]byte{content, []byte("\n")}, []byte(""))
 
 			// send to all connected clients
-			for connection := range kvs.connections {
+			for _, connection := range kvs.connections {
+				// delegate to a goroutine to do the writting for us
+				// introduce buffer; send no more than 500 messages to socket
 				connection.Write(whole)
 			}
 		} else {
@@ -94,30 +111,30 @@ func (kvs *keyValueServer) gokvstore() {
 	}
 }
 
-func (kvs *keyValueServer) clientConns(listener net.Listener) {
+func (kvs *keyValueServer) clientConns(listener *net.TCPListener) {
 	defer listener.Close()
 	for {
-		client, err := listener.Accept()
+		client, err := listener.AcceptTCP()
 		if client == nil {
 			fmt.Printf("couldn't accept: " + err.Error())
 			continue
 		}
 		fmt.Println("accpted")
-		m := connectionMessage{client, 0}
+		m := connectionMessage{*client, 0}
 		kvs.connectionCh <- m
-		fmt.Printf("%d: %v <-> %v\n", kvs.clientCount, client.LocalAddr(), client.RemoteAddr())
+		// fmt.Printf("%d: %v <-> %v\n", kvs.clientCount, client.LocalAddr(), client.RemoteAddr())
 		go kvs.handleConn(client)
 	}
 }
 
-func (kvs *keyValueServer) handleConn(client net.Conn) {
+func (kvs *keyValueServer) handleConn(client *net.TCPConn) {
 	defer client.Close()
 	b := bufio.NewReader(client)
 	for {
 		// ReadBytes include '\n'
 		line, err := b.ReadBytes('\n')
 		if err != nil { // EOF, or worse
-			m := connectionMessage{client, 1}
+			m := connectionMessage{*client, 1}
 			kvs.connectionCh <- m
 			client.Close()
 			break
