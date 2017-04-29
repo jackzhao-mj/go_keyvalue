@@ -75,9 +75,11 @@ func (kvs *keyValueServer) goconnections() {
 		m := <-kvs.connectionCh
 		if m.choice == 0 {
 			// add
-			// kvs.connections[m.client] = true
+			// introduce buffer; send no more than 500 messages to socket
 			ch := make(chan []byte, 1000)
 			kvs.clientStates = append(kvs.clientStates, clientState{m.client, ch})
+			// delegate to a goroutine to do the writting for us
+			go kvs.delegateWriter(m.client, ch)
 			kvs.clientCount++
 		} else {
 			// delete
@@ -103,13 +105,17 @@ func (kvs *keyValueServer) gokvstore() {
 			value := get(string(m.key))
 			content := bytes.Join([][]byte{m.key, value}, []byte(","))
 			whole := bytes.Join([][]byte{content, []byte("\n")}, []byte(""))
+			// fmt.Print(string(whole))
 
 			// send to all connected clients
 			for _, clientState := range kvs.clientStates {
-				// delegate to a goroutine to do the writting for us
-				// introduce buffer; send no more than 500 messages to socket
-				clientState.connection.Write(whole)
 				// write whole to channel responding to the all connections
+				// first check if channel is already full; if yes, dont send to it
+				if len(clientState.toBeSent) == cap(clientState.toBeSent) {
+					continue
+				}
+				clientState.toBeSent <- whole
+
 			}
 		} else {
 			put(string(m.key), m.value)
@@ -126,10 +132,22 @@ func (kvs *keyValueServer) clientConns(listener *net.TCPListener) {
 			continue
 		}
 		fmt.Println("accpted")
+		// set TCPConn WriteBuffer: 15 per message * 500
+		// the longest message is 17 bytes
+		// the first write succeed, but the second one will block
+		client.SetWriteBuffer(300000)
 		m := connectionMessage{*client, 0}
 		kvs.connectionCh <- m
 		// fmt.Printf("%d: %v <-> %v\n", kvs.clientCount, client.LocalAddr(), client.RemoteAddr())
 		go kvs.handleConn(client)
+	}
+}
+
+func (kvs *keyValueServer) delegateWriter(client net.TCPConn, ch chan []byte) {
+	for {
+		// whole is the line to be sent
+		whole := <-ch
+		client.Write(whole)
 	}
 }
 
